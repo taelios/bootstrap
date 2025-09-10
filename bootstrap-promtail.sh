@@ -134,7 +134,7 @@ positions:
   filename: ${POS_FILE}
 
 clients:
-  - url: ${L OKI_URL}
+  - url: ${LOKI_URL}
     batchwait: 1s
     batchsize: 1048576
 

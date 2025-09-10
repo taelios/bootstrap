@@ -12,17 +12,15 @@ log() { printf "\033[1;32m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*"; }
 die() { printf "\033[1;31mXX\033[0m %s\n" "$*"; exit 1; }
 
-# A) Detect OS (Debian/Ubuntu expected)
+# Detect OS (Debian/Ubuntu expected)
 if [[ -r /etc/os-release ]]; then
   . /etc/os-release
-  OS_ID="${ID:-unknown}"
-  OS_VER="${VERSION_ID:-unknown}"
-  log "Detected ${OS_ID^} ${OS_VER}"
+  log "Detected ${ID^} ${VERSION_ID:-unknown}"
 else
   die "Cannot detect OS (missing /etc/os-release)."
 fi
 
-# B) Ask user inputs
+# --- Input: app name & Loki address ---
 APP_NAME="${APP_NAME:-}"
 if [[ -z "${APP_NAME}" ]]; then
   read -rp "Application name for this LXC (e.g. jellyfin, radarr): " APP_NAME
@@ -38,9 +36,62 @@ else
 fi
 log "Using Loki push URL: ${LOKI_URL}"
 
-SERVICE_NAME="${SERVICE_NAME:-${APP_NAME}.service}"
+# --- Service resolution helper ---
+normalise_unit() {
+  # ensure .service suffix
+  local u="$1"
+  [[ "$u" == *.service ]] || u="${u}.service"
+  printf "%s" "$u"
+}
 
-# Basic deps + Promtail
+pick_service() {
+  local hint="${1:-}" ; local -a cands=() ; local line
+  # collect active/inactive units that match (case-insensitive)
+  while read -r line; do cands+=("${line%% *}"); done < <(systemctl list-units --type=service --all --no-legend --no-pager | grep -i "${hint}" || true)
+  # collect installed unit files too
+  while read -r line; do cands+=("${line%% *}"); done < <(systemctl list-unit-files --type=service --no-legend --no-pager | grep -i "${hint}" || true)
+  # add common guesses
+  cands+=("$(normalise_unit "${hint}")" "$(normalise_unit "${hint,,}")")
+
+  # uniq, drop empties
+  mapfile -t cands < <(printf "%s\n" "${cands[@]}" | awk 'NF' | sort -fu)
+
+  if (( ${#cands[@]} == 0 )); then
+    warn "No services matched '${hint}'. You can re-run with SERVICE_NAME=<unit>.service"
+    return 1
+  elif (( ${#cands[@]} == 1 )); then
+    printf "%s" "${cands[0]}"
+    return 0
+  else
+    log "Multiple services matched '${hint}':"
+    local i=1
+    for s in "${cands[@]}"; do printf "  [%d] %s\n" "$i" "$s"; ((i++)); done
+    read -rp "Select [1]: " choice
+    choice="${choice:-1}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice>=1 && choice<=${#cands[@]} )); then
+      printf "%s" "${cands[choice-1]}"
+      return 0
+    else
+      printf "%s" "${cands[0]}"
+      return 0
+    fi
+  fi
+}
+
+# Resolve service (allow override)
+SERVICE_NAME="${SERVICE_NAME:-}"
+if [[ -z "${SERVICE_NAME}" ]]; then
+  if ! SERVICE_NAME="$(pick_service "${APP_NAME}")"; then
+    warn "Skipping journald override (service not found)."
+    SERVICE_NAME=""
+  fi
+fi
+if [[ -n "${SERVICE_NAME}" ]]; then
+  SERVICE_NAME="$(normalise_unit "${SERVICE_NAME}")"
+  log "Using service: ${SERVICE_NAME}"
+fi
+
+# --- Install Promtail ---
 log "Installing prerequisites and Promtail…"
 apt-get update
 apt-get install -y curl gpg ca-certificates
@@ -50,38 +101,41 @@ mkdir -p /etc/apt/keyrings
 apt-get update
 apt-get install -y promtail
 
-# C) Make the app write to journald
-log "Configuring systemd override for ${SERVICE_NAME} → journald…"
-OVR_DIR="/etc/systemd/system/${SERVICE_NAME%.service}.service.d"
-mkdir -p "$OVR_DIR"
-cat > "${OVR_DIR}/override.conf" <<EOF
+# --- Journald override for the service (if resolved) ---
+if [[ -n "${SERVICE_NAME}" ]]; then
+  log "Configuring systemd override for ${SERVICE_NAME} → journald…"
+  OVR_DIR="/etc/systemd/system/${SERVICE_NAME}.d"
+  mkdir -p "$OVR_DIR"
+  cat > "${OVR_DIR}/override.conf" <<EOF
 [Service]
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${APP_NAME}
 EOF
-systemctl daemon-reload
-if systemctl status "${SERVICE_NAME}" >/dev/null 2>&1; then
-  systemctl restart "${SERVICE_NAME}" || warn "Restart of ${SERVICE_NAME} failed. Check the unit name."
-else
-  warn "Service ${SERVICE_NAME} not found. Skipping restart; verify the correct unit name."
+  systemctl daemon-reload
+  if systemctl status "${SERVICE_NAME}" >/dev/null 2>&1; then
+    systemctl restart "${SERVICE_NAME}" || warn "Restart of ${SERVICE_NAME} failed. Check the unit."
+  else
+    warn "Service ${SERVICE_NAME} not running; override installed."
+  fi
 fi
 
-# Ensure persistent journal in LXC
-log "Ensuring persistent journald…"
+# --- Ensure persistent journal & promtail state ---
+log "Ensuring persistent journald and promtail state…"
 mkdir -p /var/log/journal
-systemctl restart systemd-journald
+systemctl restart systemd-journald || true
 
-# D/E) Promtail positions, perms, config (host label = app name)
-log "Preparing Promtail state and permissions…"
 mkdir -p "${POS_DIR}"
 touch "${POS_FILE}"
 chown -R promtail: "${POS_DIR}"
 chmod 755 "${POS_DIR}"
 chmod 640 "${POS_FILE}"
+
+# journal + /var/log access
 usermod -aG systemd-journal promtail || true
 usermod -aG adm promtail || true
 
+# --- Promtail config ---
 log "Writing ${PROMTAIL_CONFIG}…"
 mkdir -p "$(dirname "${PROMTAIL_CONFIG}")"
 cat > "${PROMTAIL_CONFIG}" <<YAML
@@ -98,7 +152,6 @@ clients:
     batchsize: 1048576
 
 scrape_configs:
-  # Journald from this LXC
   - job_name: journal
     journal:
       path: /var/log/journal
@@ -112,7 +165,6 @@ scrape_configs:
       - source_labels: ['__journal__syslog_identifier']
         target_label: app
 
-  # Generic files under /var/log (covers nginx, many services)
   - job_name: varlogs
     static_configs:
       - targets: ['localhost']
@@ -122,7 +174,7 @@ scrape_configs:
           __path__: /var/log/**/*.log
 YAML
 
-# F) Enable, verify, hint
+# --- Start & verify ---
 log "Enabling and starting Promtail…"
 systemctl enable --now promtail
 

@@ -1,25 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- Defaults (override via env) ---
+# Defaults (override via env)
 DEFAULT_LOKI_IP="${DEFAULT_LOKI_IP:-10.0.2.35}"
 PROMTAIL_CONFIG="/etc/promtail/config.yml"
 POS_DIR="/var/lib/promtail"
 POS_FILE="${POS_DIR}/positions.yml"
-# -----------------------------------
 
-log()  { printf "\033[1;32m==>\033[0m %s\n" "$*"; }
-warn() { printf "\033[1;33m!!\033[0m %s\n" "$*"; }
-die()  { printf "\033[1;31mXX\033[0m %s\n" "$*"; exit 1; }
+log()  { >&2 printf "\033[1;32m==>\033[0m %s\n" "$*"; }
+warn() { >&2 printf "\033[1;33m!!\033[0m %s\n" "$*"; }
+die()  { >&2 printf "\033[1;31mXX\033[0m %s\n" "$*"; exit 1; }
 
 read_tty() {
-  # read from TTY even when script is piped
-  local prompt="$1" var
+  local prompt="$1" var=""
   if [[ -t 0 ]]; then
     read -rp "$prompt" var
   else
-    # shellcheck disable=SC2162
-    read -rp "$prompt" var </dev/tty || var=""
+    # read from the terminal when stdin is a pipe
+    read -rp "$prompt" var </dev/tty || true
   fi
   printf "%s" "$var"
 }
@@ -32,11 +30,9 @@ else
   die "Cannot detect OS (missing /etc/os-release)."
 fi
 
-# --- Inputs ---
+# Inputs
 APP_NAME="${APP_NAME:-}"
-if [[ -z "$APP_NAME" ]]; then
-  APP_NAME="$(read_tty 'Application name for this LXC (e.g. jellyfin, radarr): ')"
-fi
+[[ -z "$APP_NAME" ]] && APP_NAME="$(read_tty 'Application name for this LXC (e.g. jellyfin, radarr): ')"
 [[ -z "$APP_NAME" ]] && die "Application name is required."
 
 LOKI_INPUT="$(read_tty "Loki IP or URL [${DEFAULT_LOKI_IP}]: ")"
@@ -48,7 +44,7 @@ else
 fi
 log "Using Loki push URL: ${LOKI_URL}"
 
-# --- Service resolver ---
+# Service resolution
 normalise_unit() { [[ "$1" == *.service ]] && printf %s "$1" || printf %s "$1.service"; }
 
 pick_service() {
@@ -62,17 +58,15 @@ pick_service() {
     return 1
   elif ((${#cands[@]}==1)); then
     printf "%s" "${cands[0]}"
-    return 0
   else
     log "Multiple services matched '${hint}':"
-    local i=1; for s in "${cands[@]}"; do printf "  [%d] %s\n" "$i" "$s"; ((i++)); done
+    local i=1; for s in "${cands[@]}"; do >&2 printf "  [%d] %s\n" "$i" "$s"; ((i++)); done
     local choice; choice="$(read_tty 'Select [1]: ')"; choice="${choice:-1}"
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice>=1 && choice<=${#cands[@]} )); then
       printf "%s" "${cands[choice-1]}"
     else
       printf "%s" "${cands[0]}"
     fi
-    return 0
   fi
 }
 
@@ -87,7 +81,7 @@ if [[ -z "$SERVICE_NAME" ]]; then
   fi
 fi
 
-# --- Install Promtail ---
+# Install Promtail
 log "Installing prerequisites and Promtail…"
 apt-get update
 apt-get install -y curl gpg ca-certificates
@@ -97,7 +91,7 @@ mkdir -p /etc/apt/keyrings
 apt-get update
 apt-get install -y promtail
 
-# --- Journald override (if we found a service) ---
+# Journald override (only for the resolved unit)
 if [[ -n "$SERVICE_NAME" ]]; then
   log "Configuring journald override for ${SERVICE_NAME}…"
   OVR_DIR="/etc/systemd/system/${SERVICE_NAME}.d"
@@ -114,7 +108,7 @@ EOF
   fi
 fi
 
-# --- Ensure persistent journal & promtail state ---
+# Persistent journal & Promtail state
 log "Ensuring persistent journald…"
 mkdir -p /var/log/journal
 systemctl restart systemd-journald || true
@@ -128,7 +122,7 @@ chmod 640 "$POS_FILE"
 usermod -aG systemd-journal promtail || true
 usermod -aG adm promtail || true
 
-# --- Promtail config ---
+# Promtail config
 log "Writing ${PROMTAIL_CONFIG}…"
 mkdir -p "$(dirname "$PROMTAIL_CONFIG")"
 cat > "$PROMTAIL_CONFIG" <<YAML
@@ -140,7 +134,7 @@ positions:
   filename: ${POS_FILE}
 
 clients:
-  - url: ${LOKI_URL}
+  - url: ${L OKI_URL}
     batchwait: 1s
     batchsize: 1048576
 
@@ -167,7 +161,7 @@ scrape_configs:
           __path__: /var/log/**/*.log
 YAML
 
-# --- Start & verify ---
+# Start & verify
 log "Enabling and starting promtail…"
 systemctl enable --now promtail
 if command -v promtail >/dev/null 2>&1; then

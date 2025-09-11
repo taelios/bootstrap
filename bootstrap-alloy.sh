@@ -46,7 +46,7 @@ mkdir -p /etc/apt/keyrings
 [[ -s /etc/apt/keyrings/grafana.gpg ]] || curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor -o /etc/apt/keyrings/grafana.gpg
 [[ -s /etc/apt/sources.list.d/grafana.list ]] || echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" > /etc/apt/sources.list.d/grafana.list
 apt-get update
-apt-get install -y grafana-alloy
+apt-get install -y alloy
 
 # Journald override for the app
 if [[ -n "$SERVICE_NAME" ]]; then

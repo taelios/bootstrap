@@ -70,27 +70,91 @@ usermod -aG adm alloy || true
 # Alloy config (logs → Loki, metrics exposed on :9100)
 mkdir -p "${ALLOY_DIR}"
 cat > "${ALLOY_CFG}" <<RIVER
-loki.source.journal "journald" {
-  path   = "/var/log/journal"
-  labels = { job = "systemd", host = "${APP_NAME}" }
-  forward_to = [loki.process.journal.receiver]
+// ---------- LOGS: journald -> Loki ----------
+// Shared relabel rules (for app/unit labels)
+loki.relabel "journal_rules" {
+  forward_to = []
+
+  rule {
+    action        = "replace"
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+    regex         = "(.+)"
+    replacement   = "$1"
+  }
+
+  rule {
+    action        = "replace"
+    source_labels = ["__journal__syslog_identifier"]
+    target_label  = "app"
+    regex         = "(.+)"
+    replacement   = "$1"
+  }
+
+  rule {
+    action        = "replace"
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "app"
+    regex         = "^(.+?)(?:\\.(?:service|slice|scope))?$"
+    replacement   = "$1"
+  }
+
+  rule {
+    action        = "replace"
+    source_labels = ["__journal__unit"]
+    target_label  = "app"
+    regex         = "^(.+?)(?:\\.(?:service|slice|scope))?$"
+    replacement   = "$1"
+  }
 }
 
-loki.process "journal" {
-  stage { template { source = "unit" template = "{{ .__journal__systemd_unit }}" } }
-  stage { template { source = "app"  template = "{{ .__journal__syslog_identifier }}" } }
-  stage { labels { unit = "unit", app = "app" } }
+// Parse and NORMALISE log levels into a real 'level' LABEL
+loki.process "levels" {
   forward_to = [loki.write.out.receiver]
+
+  // style 1: key=value (e.g., level=warn)
+  stage.regex {
+    expression = "(?i)\\blevel\\s*=\\s*(?P<level>[a-z]+)\\b"
+  }
+
+  // style 2: bracketed (e.g., [Info])
+  stage.regex {
+    expression = "(?i)\\[(?P<level>trace|debug|info|warn|warning|error|fatal|critical)\\]"
+  }
+
+  // normalise: WARNING -> warn, and lowercase everything else
+  stage.template {
+    source   = "level"
+    template = "{{ if eq (ToLower .Value) \"warning\" }}warn{{ else }}{{ ToLower .Value }}{{ end }}"
+  }
+
+  // promote to a LABEL only if we extracted something
+  stage.labels {
+    values = { level = "level" }
+  }
+}
+
+loki.source.journal "read" {
+  labels        = { job = "systemd", host = env("HOSTNAME") }
+  relabel_rules = loki.relabel.journal_rules.rules
+  forward_to    = [loki.process.levels.receiver]
 }
 
 loki.write "out" {
-  endpoint { url = "${LOKI_URL}" }
+  endpoint { url = "http://10.0.2.35:3100/loki/api/v1/push" }
 }
 
-prometheus.exporter.node "local" {}   # exposes :9100/metrics
+// ---------- METRICS: scrape locally, push to Prometheus ----------
+prometheus.exporter.unix "node" {}
+
 prometheus.scrape "node" {
-  targets    = [prometheus.exporter.node.local.target]
-  forward_to = []                     # pull-only; Prometheus will scrape us
+  targets         = prometheus.exporter.unix.node.targets
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.to_prom.receiver]
+}
+
+prometheus.remote_write "to_prom" {
+  endpoint { url = "http://10.0.2.35:9090/api/v1/write" }
 }
 RIVER
 

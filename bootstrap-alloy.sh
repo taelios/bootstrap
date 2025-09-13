@@ -10,7 +10,7 @@ ALLOY_CFG="${ALLOY_DIR}/config.alloy"
 log(){ >&2 printf "\033[1;32m==>\033[0m %s\n" "$*"; }
 warn(){ >&2 printf "\033[1;33m!!\033[0m %s\n" "$*"; }
 die(){ >&2 printf "\033[1;31mXX\033[0m %s\n" "$*"; exit 1; }
-ask(){ local p="${1-}> "; local v=""; if [[ -t 0 ]]; then read -rp "$p" v; else read -rp "$p" v </dev/tty || true; fi; printf "%s" "$v"; }
+ask(){ local p="${1-}"; local v=""; printf "%s" "$p" >&2; read -r v </dev/tty || v=""; printf "%s" "$v"; }
 
 # Safe helpers (never touch bare $1 with set -u)
 norm(){

@@ -110,7 +110,7 @@ usermod -aG adm alloy || true
 
 # Alloy config (logs → Loki, metrics → Prom remote_write)
 mkdir -p "${ALLOY_DIR}"
-cat > "${ALLOY_CFG}" <<RIVER
+cat > "${ALLOY_CFG}" <<"RIVER"
 // ---------- LOGS: journald -> Loki ----------
 // Shared relabel rules (for app/unit labels)
 loki.relabel "journal_rules" {
@@ -182,7 +182,7 @@ loki.source.journal "read" {
 }
 
 loki.write "out" {
-  endpoint { url = "http://10.0.2.35:3100/loki/api/v1/push" }
+  endpoint { url = "LOKI_URL_PLACEHOLDER" }
 }
 
 // ---------- METRICS: scrape locally, push to Prometheus ----------
@@ -195,9 +195,13 @@ prometheus.scrape "node" {
 }
 
 prometheus.remote_write "to_prom" {
-  endpoint { url = "http://10.0.2.35:9090/api/v1/write" }
+  endpoint { url = "PROM_WRITE_PLACEHOLDER" }
 }
 RIVER
+
+# Substitute the actual URLs
+sed -i "s|LOKI_URL_PLACEHOLDER|${LOKI_URL}|g" "${ALLOY_CFG}"
+sed -i "s|PROM_WRITE_PLACEHOLDER|${PROM_WRITE}|g" "${ALLOY_CFG}"
 
 systemctl enable --now alloy
 systemctl --no-pager --full status alloy || true

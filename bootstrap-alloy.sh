@@ -121,7 +121,7 @@ loki.relabel "journal_rules" {
     source_labels = ["__journal__systemd_unit"]
     target_label  = "unit"
     regex         = "(.+)"
-    replacement   = "\$1"
+    replacement   = "$1"
   }
 
   rule {
@@ -129,23 +129,23 @@ loki.relabel "journal_rules" {
     source_labels = ["__journal__syslog_identifier"]
     target_label  = "app"
     regex         = "(.+)"
-    replacement   = "\$1"
+    replacement   = "$1"
   }
 
   rule {
     action        = "replace"
     source_labels = ["__journal__systemd_unit"]
     target_label  = "app"
-    regex         = "^(.+?)(?:\\.(?:service|slice|scope))?\$"
-    replacement   = "\$1"
+    regex         = "^(.+?)(?:\\.(?:service|slice|scope))?$"
+    replacement   = "$1"
   }
 
   rule {
     action        = "replace"
     source_labels = ["__journal__unit"]
     target_label  = "app"
-    regex         = "^(.+?)(?:\\.(?:service|slice|scope))?\$"
-    replacement   = "\$1"
+    regex         = "^(.+?)(?:\\.(?:service|slice|scope))?$"
+    replacement   = "$1"
   }
 }
 
@@ -163,7 +163,7 @@ loki.process "levels" {
     expression = "(?i)\\[(?P<level>trace|debug|info|warn|warning|error|fatal|critical)\\]"
   }
 
-  // normalise: WARNING -> warn, lowercase others
+  // normalise: WARNING -> warn, and lowercase everything else
   stage.template {
     source   = "level"
     template = "{{ if eq (ToLower .Value) \"warning\" }}warn{{ else }}{{ ToLower .Value }}{{ end }}"
@@ -182,25 +182,20 @@ loki.source.journal "read" {
 }
 
 loki.write "out" {
-  endpoint { url = "${LOKI_URL}" }
+  endpoint { url = "http://10.0.2.35:3100/loki/api/v1/push" }
 }
 
 // ---------- METRICS: scrape locally, push to Prometheus ----------
 prometheus.exporter.unix "node" {}
 
-prometheus.relabel "metrics_labels" {
-  forward_to = [prometheus.remote_write.to_prom.receiver]
-  rule { action = "replace"; target_label = "instance"; replacement = env("HOSTNAME") }
-}
-
 prometheus.scrape "node" {
   targets         = prometheus.exporter.unix.node.targets
   scrape_interval = "15s"
-  forward_to      = [prometheus.relabel.metrics_labels.receiver]
+  forward_to      = [prometheus.remote_write.to_prom.receiver]
 }
 
 prometheus.remote_write "to_prom" {
-  endpoint { url = "${PROM_WRITE}" }
+  endpoint { url = "http://10.0.2.35:9090/api/v1/write" }
 }
 RIVER
 

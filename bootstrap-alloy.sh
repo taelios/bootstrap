@@ -34,9 +34,11 @@ pick(){
   if (( ${#c[@]} == 1 )); then
     printf "%s" "${c[0]}"
   else
-    log "Multiple services matched '${hint}':"
+    >&2 printf "\033[1;32m==>\033[0m Multiple services matched '%s':\n" "$hint"
     local i=1; for s in "${c[@]}"; do >&2 printf "  [%d] %s\n" "$i" "$s"; ((i++)); done
-    local ch; ch="$(ask 'Select [1]: ')"; ch="${ch:-1}"
+    >&2 printf "Select [1]: "
+    local ch; read -r ch </dev/tty || ch=""
+    ch="${ch:-1}"
     if [[ "$ch" =~ ^[0-9]+$ ]] && (( ch>=1 && ch<=${#c[@]} )); then printf "%s" "${c[ch-1]}"; else printf "%s" "${c[0]}"; fi
   fi
 }
